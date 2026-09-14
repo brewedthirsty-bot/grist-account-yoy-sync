@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Account YoY Sync</title>
+  <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+  <style>
+    :root {
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #202124;
+      background: #ffffff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 18px;
+      min-width: 300px;
+    }
+
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 20px;
+      margin: 0 0 6px;
+    }
+
+    .subtitle {
+      margin: 0 0 16px;
+      color: #666;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .stat {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 70px;
+    }
+
+    .stat .label {
+      color: #6b6b6b;
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+
+    .stat .value {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid #b8b8b8;
+      border-radius: 6px;
+      background: #f7f7f7;
+      padding: 9px 13px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    button.primary {
+      background: #2f6fed;
+      border-color: #2f6fed;
+      color: white;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .status {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 11px 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      min-height: 44px;
+      white-space: pre-wrap;
+    }
+
+    .status.ok {
+      border-color: #a8d5b5;
+      background: #f2fbf4;
+    }
+
+    .status.warn {
+      border-color: #e6c779;
+      background: #fff9e8;
+    }
+
+    .status.error {
+      border-color: #e3aaaa;
+      background: #fff2f2;
+    }
+
+    details {
+      margin-top: 14px;
+      font-size: 12px;
+      color: #555;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+    }
+
+    @media (max-width: 600px) {
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Account YoY Sync</h1>
+  <p class="subtitle">
+    Adds only missing Account × Year rows to <code>Account_YoY_Data</code>.
+    Existing rows are never changed or duplicated.
+  </p>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="label">Accounts</div>
+      <div class="value" id="accountsCount">—</div>
+    </div>
+    <div class="stat">
+      <div class="label">Years</div>
+      <div class="value" id="yearsCount">—</div>
+    </div>
+    <div class="stat">
+      <div class="label">Existing combinations</div>
+      <div class="value" id="existingCount">—</div>
+    </div>
+    <div class="stat">
+      <div class="label">Missing combinations</div>
+      <div class="value" id="missingCount">—</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="syncBtn" class="primary" disabled>Sync Account YoY</button>
+    <button id="refreshBtn">Refresh preview</button>
+  </div>
+
+  <div id="status" class="status">Connecting to Grist…</div>
+
+  <details>
+    <summary>What this widget does</summary>
+    <p>
+      It reads <code>Accounts.CanonicalID</code>, every value in <code>Years.Year</code>,
+      and the existing <code>CanonicalID + Year</code> pairs in
+      <code>Account_YoY_Data</code>. It inserts only combinations that do not already exist.
+    </p>
+    <p>
+      If the target table has an <code>Account</code> text column, the widget also fills it
+      from <code>Accounts.Account</code>. Formula columns such as Account Ref, YTD CEs,
+      Prior Year YTD CEs, Opportunity, and Priority are left for Grist to calculate.
+    </p>
+  </details>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const CONFIG = {
+    accountsTable: "Accounts",
+    yearsTable: "Years",
+    yoyTable: "Account_YoY_Data",
+    canonicalIdColumn: "CanonicalID",
+    accountNameColumn: "Account",
+    yearColumn: "Year",
+    batchSize: 250
+  };
+
+  const el = {
+    syncBtn: document.getElementById("syncBtn"),
+    refreshBtn: document.getElementById("refreshBtn"),
+    status: document.getElementById("status"),
+    accountsCount: document.getElementById("accountsCount"),
+    yearsCount: document.getElementById("yearsCount"),
+    existingCount: document.getElementById("existingCount"),
+    missingCount: document.getElementById("missingCount")
+  };
+
+  let preview = null;
+  let busy = false;
+
+  function setStatus(message, kind = "") {
+    el.status.textContent = message;
+    el.status.className = `status ${kind}`.trim();
+  }
+
+  function setBusy(value) {
+    busy = value;
+    el.refreshBtn.disabled = value;
+    el.syncBtn.disabled = value || !preview || preview.missing.length === 0 || preview.blocked;
+  }
+
+  function columnExists(table, columnId) {
+    return Object.prototype.hasOwnProperty.call(table, columnId);
+  }
+
+  function normalizeText(value) {
+    return value == null ? "" : String(value).trim();
+  }
+
+  function normalizeYear(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    const y = Math.trunc(n);
+    return y === n && y >= 1900 && y <= 2200 ? y : null;
+  }
+
+  function rowCount(table) {
+    return Array.isArray(table.id) ? table.id.length : 0;
+  }
+
+  async function loadPreview() {
+    if (busy) return;
+    preview = null;
+    setBusy(true);
+    setStatus("Reading Accounts, Years, and Account YoY Data…");
+
+    try {
+      const tableIds = await grist.docApi.listTables();
+
+      const requiredTables = [
+        CONFIG.accountsTable,
+        CONFIG.yearsTable,
+        CONFIG.yoyTable
+      ];
+      const missingTables = requiredTables.filter(t => !tableIds.includes(t));
+
+      if (missingTables.length) {
+        throw new Error(
+          `Missing required table${missingTables.length > 1 ? "s" : ""}: ${missingTables.join(", ")}`
+        );
+      }
+
+      const [accounts, years, yoy] = await Promise.all([
+        grist.docApi.fetchTable(CONFIG.accountsTable),
+        grist.docApi.fetchTable(CONFIG.yearsTable),
+        grist.docApi.fetchTable(CONFIG.yoyTable)
+      ]);
+
+      const requiredColumns = [
+        [accounts, CONFIG.canonicalIdColumn, `${CONFIG.accountsTable}.${CONFIG.canonicalIdColumn}`],
+        [years, CONFIG.yearColumn, `${CONFIG.yearsTable}.${CONFIG.yearColumn}`],
+        [yoy, CONFIG.canonicalIdColumn, `${CONFIG.yoyTable}.${CONFIG.canonicalIdColumn}`],
+        [yoy, CONFIG.yearColumn, `${CONFIG.yoyTable}.${CONFIG.yearColumn}`]
+      ];
+
+      const missingColumns = requiredColumns
+        .filter(([table, col]) => !columnExists(table, col))
+        .map(([, , name]) => name);
+
+      if (missingColumns.length) {
+        throw new Error(`Missing required column${missingColumns.length > 1 ? "s" : ""}: ${missingColumns.join(", ")}`);
+      }
+
+      // Build a unique, validated account list.
+      const accountMap = new Map();
+      const duplicateAccountIds = new Set();
+      let blankAccountIds = 0;
+
+      for (let i = 0; i < rowCount(accounts); i++) {
+        const canonicalID = normalizeText(accounts[CONFIG.canonicalIdColumn][i]);
+        if (!canonicalID) {
+          blankAccountIds++;
+          continue;
+        }
+
+        const accountName = columnExists(accounts, CONFIG.accountNameColumn)
+          ? normalizeText(accounts[CONFIG.accountNameColumn][i])
+          : "";
+
+        if (accountMap.has(canonicalID)) {
+          duplicateAccountIds.add(canonicalID);
+          continue;
+        }
+
+        accountMap.set(canonicalID, { canonicalID, accountName });
+      }
+
+      // Duplicate CanonicalIDs in Accounts are dangerous: do not guess.
+      const blocked = duplicateAccountIds.size > 0;
+
+      // Read unique valid years from the Years table.
+      const yearSet = new Set();
+      let invalidYears = 0;
+
+      for (let i = 0; i < rowCount(years); i++) {
+        const year = normalizeYear(years[CONFIG.yearColumn][i]);
+        if (year === null) {
+          if (years[CONFIG.yearColumn][i] !== null &&
+              years[CONFIG.yearColumn][i] !== undefined &&
+              years[CONFIG.yearColumn][i] !== "") {
+            invalidYears++;
+          }
+          continue;
+        }
+        yearSet.add(year);
+      }
+
+      const yearList = Array.from(yearSet).sort((a, b) => a - b);
+
+      // Build existing target keys and count any duplicates already present.
+      const existing = new Set();
+      const duplicateTargetKeys = new Set();
+
+      for (let i = 0; i < rowCount(yoy); i++) {
+        const canonicalID = normalizeText(yoy[CONFIG.canonicalIdColumn][i]);
+        const year = normalizeYear(yoy[CONFIG.yearColumn][i]);
+
+        if (!canonicalID || year === null) continue;
+
+        const key = `${canonicalID}|${year}`;
+        if (existing.has(key)) {
+          duplicateTargetKeys.add(key);
+        } else {
+          existing.add(key);
+        }
+      }
+
+      const targetHasAccountText = columnExists(yoy, CONFIG.accountNameColumn);
+      const missing = [];
+
+      for (const account of accountMap.values()) {
+        for (const year of yearList) {
+          const key = `${account.canonicalID}|${year}`;
+          if (!existing.has(key)) {
+            missing.push({
+              canonicalID: account.canonicalID,
+              accountName: account.accountName,
+              year
+            });
+          }
+        }
+      }
+
+      preview = {
+        accountsCount: accountMap.size,
+        yearsCount: yearList.length,
+        existingCount: existing.size,
+        missing,
+        blocked,
+        duplicateAccountIds: Array.from(duplicateAccountIds).sort(),
+        duplicateTargetKeysCount: duplicateTargetKeys.size,
+        blankAccountIds,
+        invalidYears,
+        targetHasAccountText
+      };
+
+      el.accountsCount.textContent = preview.accountsCount.toLocaleString();
+      el.yearsCount.textContent = preview.yearsCount.toLocaleString();
+      el.existingCount.textContent = preview.existingCount.toLocaleString();
+      el.missingCount.textContent = preview.missing.length.toLocaleString();
+
+      const notes = [];
+
+      if (preview.blocked) {
+        notes.push(
+          `STOP: Accounts contains duplicate CanonicalIDs (${preview.duplicateAccountIds.join(", ")}). ` +
+          `Fix those before syncing.`
+        );
+      } else if (preview.missing.length === 0) {
+        notes.push("Everything is already up to date. No rows need to be added.");
+      } else {
+        notes.push(
+          `${preview.missing.length.toLocaleString()} missing Account × Year row` +
+          `${preview.missing.length === 1 ? "" : "s"} ready to add.`
+        );
+      }
+
+      if (preview.duplicateTargetKeysCount > 0) {
+        notes.push(
+          `Warning: Account_YoY_Data already contains ${preview.duplicateTargetKeysCount.toLocaleString()} duplicate ` +
+          `CanonicalID + Year combination${preview.duplicateTargetKeysCount === 1 ? "" : "s"}. ` +
+          `This widget will not create additional duplicates.`
+        );
+      }
+
+      if (preview.blankAccountIds > 0) {
+        notes.push(
+          `${preview.blankAccountIds.toLocaleString()} Accounts row` +
+          `${preview.blankAccountIds === 1 ? " has" : "s have"} a blank CanonicalID and will be skipped.`
+        );
+      }
+
+      if (preview.invalidYears > 0) {
+        notes.push(
+          `${preview.invalidYears.toLocaleString()} invalid Year value` +
+          `${preview.invalidYears === 1 ? " was" : "s were"} ignored.`
+        );
+      }
+
+      setStatus(
+        notes.join("\n"),
+        preview.blocked ? "error" :
+          preview.duplicateTargetKeysCount > 0 || preview.blankAccountIds > 0 || preview.invalidYears > 0
+            ? "warn"
+            : "ok"
+      );
+    } catch (err) {
+      preview = null;
+      setStatus(`Could not build preview:\n${err && err.message ? err.message : String(err)}`, "error");
+      el.accountsCount.textContent = "—";
+      el.yearsCount.textContent = "—";
+      el.existingCount.textContent = "—";
+      el.missingCount.textContent = "—";
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function syncMissing() {
+    if (busy || !preview || preview.blocked || preview.missing.length === 0) return;
+
+    const total = preview.missing.length;
+    const targetHasAccountText = preview.targetHasAccountText;
+
+    setBusy(true);
+
+    try {
+      let added = 0;
+
+      for (let start = 0; start < total; start += CONFIG.batchSize) {
+        const batch = preview.missing.slice(start, start + CONFIG.batchSize);
+
+        const actions = batch.map(row => {
+          const values = {
+            [CONFIG.canonicalIdColumn]: row.canonicalID,
+            [CONFIG.yearColumn]: row.year
+          };
+
+          if (targetHasAccountText && row.accountName) {
+            values[CONFIG.accountNameColumn] = row.accountName;
+          }
+
+          return ["AddRecord", CONFIG.yoyTable, null, values];
+        });
+
+        setStatus(
+          `Adding missing rows… ${added.toLocaleString()} of ${total.toLocaleString()} complete.`,
+          "warn"
+        );
+
+        await grist.docApi.applyUserActions(actions);
+        added += batch.length;
+      }
+
+      setStatus(
+        `Sync complete. Added ${added.toLocaleString()} missing Account × Year row` +
+        `${added === 1 ? "" : "s"}. Refreshing preview…`,
+        "ok"
+      );
+
+      // Re-read the document so a second click can never repeat the same rows.
+      await loadPreview();
+
+      if (preview && preview.missing.length === 0) {
+        setStatus(
+          `Sync complete. Added ${added.toLocaleString()} row${added === 1 ? "" : "s"}. ` +
+          `Account YoY is now fully synced.`,
+          preview.duplicateTargetKeysCount > 0 ? "warn" : "ok"
+        );
+      }
+    } catch (err) {
+      setStatus(
+        `Sync stopped because Grist returned an error.\n` +
+        `${err && err.message ? err.message : String(err)}\n\n` +
+        `Rows successfully added before the error will remain. Click Refresh preview before trying again.`,
+        "error"
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  el.refreshBtn.addEventListener("click", loadPreview);
+  el.syncBtn.addEventListener("click", syncMissing);
+
+  grist.ready({ requiredAccess: "full" });
+
+  // Build a preview as soon as Grist grants access.
+  loadPreview();
+})();
+</script>
+</body>
+</html>
