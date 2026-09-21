@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Account YoY Sync</title>
+  <title>FDR Reporting Sync</title>
   <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
   <style>
     :root {
@@ -137,380 +137,296 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Account YoY Sync</h1>
-  <p class="subtitle">
-    Adds only missing Account × Year rows to <code>Account_YoY_Data</code>.
-    Existing rows are never changed or duplicated.
-  </p>
-
+  <h1>Reporting Sync</h1>
+  <p class="subtitle">Adds missing Product × Month and Account × Year rows. Does not edit existing rows or sales.</p>
+  <h2>Monthly Sales</h2>
   <div class="stats">
-    <div class="stat">
-      <div class="label">Accounts</div>
-      <div class="value" id="accountsCount">—</div>
-    </div>
-    <div class="stat">
-      <div class="label">Years</div>
-      <div class="value" id="yearsCount">—</div>
-    </div>
-    <div class="stat">
-      <div class="label">Existing combinations</div>
-      <div class="value" id="existingCount">—</div>
-    </div>
-    <div class="stat">
-      <div class="label">Missing combinations</div>
-      <div class="value" id="missingCount">—</div>
-    </div>
+    <div class="stat"><div class="label">Products</div><div class="value" id="productsCount">—</div></div>
+    <div class="stat"><div class="label">Months</div><div class="value" id="monthsCount">—</div></div>
+    <div class="stat"><div class="label">Existing pairs</div><div class="value" id="monthlyExisting">—</div></div>
+    <div class="stat"><div class="label">Missing pairs</div><div class="value" id="monthlyMissing">—</div></div>
   </div>
-
+  <h2>Account YoY</h2>
+  <div class="stats">
+    <div class="stat"><div class="label">Accounts</div><div class="value" id="accountsCount">—</div></div>
+    <div class="stat"><div class="label">Years</div><div class="value" id="yearsCount">—</div></div>
+    <div class="stat"><div class="label">Existing pairs</div><div class="value" id="accountExisting">—</div></div>
+    <div class="stat"><div class="label">Missing pairs</div><div class="value" id="accountMissing">—</div></div>
+  </div>
   <div class="actions">
-    <button id="syncBtn" class="primary" disabled>Sync Account YoY</button>
+    <button id="syncBtn" class="primary" disabled>Sync missing rows</button>
     <button id="refreshBtn">Refresh preview</button>
   </div>
-
   <div id="status" class="status">Connecting to Grist…</div>
-
-  <details>
-    <summary>What this widget does</summary>
-    <p>
-      It reads <code>Accounts.CanonicalID</code>, every value in <code>Years.Year</code>,
-      and the existing <code>CanonicalID + Year</code> pairs in
-      <code>Account_YoY_Data</code>. It inserts only combinations that do not already exist.
-    </p>
-    <p>
-      If the target table has an <code>Account</code> text column, the widget also fills it
-      from <code>Accounts.Account</code>. Formula columns such as Account Ref, YTD CEs,
-      Prior Year YTD CEs, Opportunity, and Priority are left for Grist to calculate.
-    </p>
+  <details><summary>What this widget does</summary>
+    <p>For <code>Monthly_Sales</code>, it uses the products in <code>Products</code> and the distinct month dates already in Monthly Sales; it creates missing pairs and lets Grist's CE and Units formulas calculate. To extend the calendar beyond existing months, add those months first.</p>
+    <p>For <code>Account_YoY_Data</code>, it uses <code>Accounts</code> and <code>Years</code>. If Account YoY already has duplicate keys, it skips that part until those records are reviewed. It never deletes or rewrites records.</p>
   </details>
 </div>
-
 <script>
 (() => {
   "use strict";
 
-  const CONFIG = {
-    accountsTable: "Accounts",
-    yearsTable: "Years",
-    yoyTable: "Account_YoY_Data",
-    canonicalIdColumn: "CanonicalID",
-    accountNameColumn: "Account",
-    yearColumn: "Year",
-    batchSize: 250
+  const CFG = {
+    products: "Products", monthly: "Monthly_Sales", accounts: "Accounts",
+    years: "Years", yoy: "Account_YoY_Data", batchSize: 50
   };
-
-  const el = {
-    syncBtn: document.getElementById("syncBtn"),
-    refreshBtn: document.getElementById("refreshBtn"),
-    status: document.getElementById("status"),
-    accountsCount: document.getElementById("accountsCount"),
-    yearsCount: document.getElementById("yearsCount"),
-    existingCount: document.getElementById("existingCount"),
-    missingCount: document.getElementById("missingCount")
-  };
-
-  let preview = null;
+  const el = Object.fromEntries([
+    "productsCount", "monthsCount", "monthlyExisting", "monthlyMissing",
+    "accountsCount", "yearsCount", "accountExisting", "accountMissing",
+    "syncBtn", "refreshBtn", "status"
+  ].map(id => [id, document.getElementById(id)]));
   let busy = false;
+  let previews = null;
 
-  function setStatus(message, kind = "") {
+  const count = table => Array.isArray(table.id) ? table.id.length : 0;
+  const hasCol = (table, name) => Object.prototype.hasOwnProperty.call(table, name);
+  const text = value => value == null ? "" : String(value).trim();
+  const integer = value => Number.isSafeInteger(value) ? value : null;
+  const asRef = value => {
+    if (Array.isArray(value) && value[0] === "R") value = value[value.length - 1];
+    return integer(value) > 0 ? value : null;
+  };
+  const asYear = value => {
+    const n = Number(value);
+    return value !== null && value !== "" && Number.isInteger(n) && n >= 1900 && n <= 2200 ? n : null;
+  };
+  const asMonth = value => {
+    if (Array.isArray(value) && value[0] === "d") value = value[1];
+    if (!Number.isSafeInteger(value)) return null;
+    const day = new Date(value * 1000);
+    return !Number.isNaN(day.getTime()) && day.getUTCDate() === 1 &&
+      day.getUTCHours() === 0 && day.getUTCMinutes() === 0 && day.getUTCSeconds() === 0
+      ? value : null;
+  };
+  const key = (left, right) => `${left}|${right}`;
+  const required = (table, name, label) => {
+    if (!hasCol(table, name)) throw new Error(`Missing column: ${label}.${name}`);
+  };
+  const format = value => value.toLocaleString();
+
+  function previewMonthly(products, monthly) {
+    required(products, "Product", CFG.products);
+    required(monthly, "Product", CFG.monthly);
+    required(monthly, "Month", CFG.monthly);
+    const productMap = new Map();
+    let unnamedProducts = 0;
+    for (let i = 0; i < count(products); i++) {
+      const id = asRef(products.id[i]);
+      if (!id || !text(products.Product[i])) { unnamedProducts++; continue; }
+      productMap.set(id, text(products.Product[i]));
+    }
+    const months = new Set();
+    const existing = new Set();
+    const duplicates = new Set();
+    let malformed = 0;
+    for (let i = 0; i < count(monthly); i++) {
+      const product = asRef(monthly.Product[i]);
+      const month = asMonth(monthly.Month[i]);
+      if (!product || month === null || !productMap.has(product)) {
+        malformed++;
+        continue;
+      }
+      months.add(month);
+      const pair = key(product, month);
+      if (existing.has(pair)) duplicates.add(pair);
+      existing.add(pair);
+    }
+    const missing = [];
+    for (const product of productMap.keys()) {
+      for (const month of months) {
+        if (!existing.has(key(product, month))) missing.push({product, month});
+      }
+    }
+    // Do not create months from guesswork: the existing rows define the calendar.
+    const blocked = !productMap.size || !months.size || malformed > 0 || duplicates.size > 0 || unnamedProducts > 0;
+    return {products: productMap.size, months: months.size, existing: existing.size,
+      missing, duplicateCount: duplicates.size, malformed, unnamedProducts, blocked};
+  }
+
+  function previewAccounts(accounts, years, yoy) {
+    required(accounts, "CanonicalID", CFG.accounts);
+    required(years, "Year", CFG.years);
+    required(yoy, "CanonicalID", CFG.yoy);
+    required(yoy, "Year", CFG.yoy);
+    const accountMap = new Map();
+    let blankAccounts = 0;
+    const duplicateAccounts = new Set();
+    for (let i = 0; i < count(accounts); i++) {
+      const id = text(accounts.CanonicalID[i]);
+      if (!id) {blankAccounts++; continue;}
+      if (accountMap.has(id)) {duplicateAccounts.add(id); continue;}
+      accountMap.set(id, {id, name: hasCol(accounts,"Account") ? text(accounts.Account[i]) : ""});
+    }
+    const yearSet = new Set();
+    let invalidYears = 0;
+    for (const rawYear of years.Year) {
+      const year = asYear(rawYear);
+      if (year !== null) yearSet.add(year);
+      else if (rawYear !== null && rawYear !== "") invalidYears++;
+    }
+    const existing = new Set();
+    const duplicates = new Set();
+    let malformed = 0;
+    for (let i = 0; i < count(yoy); i++) {
+      const id = text(yoy.CanonicalID[i]);
+      const year = asYear(yoy.Year[i]);
+      if (!id || year === null) {malformed++; continue;}
+      const pair = key(id, year);
+      if (existing.has(pair)) duplicates.add(pair);
+      existing.add(pair);
+    }
+    const missing = [];
+    for (const account of accountMap.values()) {
+      for (const year of yearSet) {
+        if (!existing.has(key(account.id, year))) missing.push({...account, year});
+      }
+    }
+    const blocked = !accountMap.size || !yearSet.size || blankAccounts > 0 ||
+      duplicateAccounts.size > 0 || invalidYears > 0 || malformed > 0 || duplicates.size > 0;
+    return {accounts: accountMap.size, years: yearSet.size, existing: existing.size,
+      missing, duplicateCount: duplicates.size, duplicateAccounts: duplicateAccounts.size,
+      blankAccounts, invalidYears, malformed, blocked,
+      hasAccountName: hasCol(yoy, "Account")};
+  }
+
+  async function readPreviews() {
+    const tableIds = await grist.docApi.listTables();
+    for (const name of Object.values(CFG).filter(v => typeof v === "string")) {
+      if (!tableIds.includes(name)) throw new Error(`Missing table: ${name}`);
+    }
+    const [products, monthly, accounts, years, yoy] = await Promise.all([
+      grist.docApi.fetchTable(CFG.products), grist.docApi.fetchTable(CFG.monthly),
+      grist.docApi.fetchTable(CFG.accounts), grist.docApi.fetchTable(CFG.years),
+      grist.docApi.fetchTable(CFG.yoy)
+    ]);
+    return {monthly: previewMonthly(products, monthly),
+      account: previewAccounts(accounts, years, yoy)};
+  }
+
+  function status(message, kind = "") {
     el.status.textContent = message;
     el.status.className = `status ${kind}`.trim();
   }
-
-  function setBusy(value) {
-    busy = value;
-    el.refreshBtn.disabled = value;
-    el.syncBtn.disabled = value || !preview || preview.missing.length === 0 || preview.blocked;
+  function updateButtons() {
+    el.refreshBtn.disabled = busy;
+    el.syncBtn.disabled = busy || !previews ||
+      !((!previews.monthly.blocked && previews.monthly.missing.length) ||
+        (!previews.account.blocked && previews.account.missing.length));
+  }
+  function paint(next) {
+    previews = next;
+    el.productsCount.textContent = format(next.monthly.products);
+    el.monthsCount.textContent = format(next.monthly.months);
+    el.monthlyExisting.textContent = format(next.monthly.existing);
+    el.monthlyMissing.textContent = format(next.monthly.missing.length);
+    el.accountsCount.textContent = format(next.account.accounts);
+    el.yearsCount.textContent = format(next.account.years);
+    el.accountExisting.textContent = format(next.account.existing);
+    el.accountMissing.textContent = format(next.account.missing.length);
+    updateButtons();
+  }
+  function notes(next) {
+    const m = next.monthly, a = next.account;
+    const messages = [`Monthly Sales: ${format(m.missing.length)} missing Product × Month pairs.`];
+    if (m.blocked) messages.push(`Monthly sync paused: ${m.duplicateCount} duplicate pairs, ${m.malformed} invalid rows, ${m.unnamedProducts} unnamed products; also check that products and months exist.`);
+    messages.push(`Account YoY: ${format(a.missing.length)} missing Account × Year pairs.`);
+    if (a.blocked) messages.push(`Account YoY sync paused: ${a.duplicateCount} duplicate pairs, ${a.duplicateAccounts} duplicate account IDs, ${a.blankAccounts} blank account IDs, ${a.invalidYears} invalid years, ${a.malformed} invalid rows. Existing rows will not be deleted.`);
+    if (m.missing.length === 0 && a.missing.length === 0) messages.push("All required combinations are present (review warnings above if any).");
+    return messages.join("\n");
+  }
+  function resetDisplay() {
+    previews = null;
+    for (const id of ["productsCount","monthsCount","monthlyExisting","monthlyMissing", "accountsCount","yearsCount","accountExisting","accountMissing"]) el[id].textContent = "—";
   }
 
-  function columnExists(table, columnId) {
-    return Object.prototype.hasOwnProperty.call(table, columnId);
-  }
-
-  function normalizeText(value) {
-    return value == null ? "" : String(value).trim();
-  }
-
-  function normalizeYear(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const n = Number(value);
-    if (!Number.isFinite(n)) return null;
-    const y = Math.trunc(n);
-    return y === n && y >= 1900 && y <= 2200 ? y : null;
-  }
-
-  function rowCount(table) {
-    return Array.isArray(table.id) ? table.id.length : 0;
-  }
-
-  async function loadPreview() {
+  async function refresh() {
     if (busy) return;
-    preview = null;
-    setBusy(true);
-    setStatus("Reading Accounts, Years, and Account YoY Data…");
-
+    busy = true;
+    updateButtons();
+    status("Checking existing reporting rows…");
     try {
-      const tableIds = await grist.docApi.listTables();
-
-      const requiredTables = [
-        CONFIG.accountsTable,
-        CONFIG.yearsTable,
-        CONFIG.yoyTable
-      ];
-      const missingTables = requiredTables.filter(t => !tableIds.includes(t));
-
-      if (missingTables.length) {
-        throw new Error(
-          `Missing required table${missingTables.length > 1 ? "s" : ""}: ${missingTables.join(", ")}`
-        );
-      }
-
-      const [accounts, years, yoy] = await Promise.all([
-        grist.docApi.fetchTable(CONFIG.accountsTable),
-        grist.docApi.fetchTable(CONFIG.yearsTable),
-        grist.docApi.fetchTable(CONFIG.yoyTable)
-      ]);
-
-      const requiredColumns = [
-        [accounts, CONFIG.canonicalIdColumn, `${CONFIG.accountsTable}.${CONFIG.canonicalIdColumn}`],
-        [years, CONFIG.yearColumn, `${CONFIG.yearsTable}.${CONFIG.yearColumn}`],
-        [yoy, CONFIG.canonicalIdColumn, `${CONFIG.yoyTable}.${CONFIG.canonicalIdColumn}`],
-        [yoy, CONFIG.yearColumn, `${CONFIG.yoyTable}.${CONFIG.yearColumn}`]
-      ];
-
-      const missingColumns = requiredColumns
-        .filter(([table, col]) => !columnExists(table, col))
-        .map(([, , name]) => name);
-
-      if (missingColumns.length) {
-        throw new Error(`Missing required column${missingColumns.length > 1 ? "s" : ""}: ${missingColumns.join(", ")}`);
-      }
-
-      // Build a unique, validated account list.
-      const accountMap = new Map();
-      const duplicateAccountIds = new Set();
-      let blankAccountIds = 0;
-
-      for (let i = 0; i < rowCount(accounts); i++) {
-        const canonicalID = normalizeText(accounts[CONFIG.canonicalIdColumn][i]);
-        if (!canonicalID) {
-          blankAccountIds++;
-          continue;
-        }
-
-        const accountName = columnExists(accounts, CONFIG.accountNameColumn)
-          ? normalizeText(accounts[CONFIG.accountNameColumn][i])
-          : "";
-
-        if (accountMap.has(canonicalID)) {
-          duplicateAccountIds.add(canonicalID);
-          continue;
-        }
-
-        accountMap.set(canonicalID, { canonicalID, accountName });
-      }
-
-      // Duplicate CanonicalIDs in Accounts are dangerous: do not guess.
-      const blocked = duplicateAccountIds.size > 0;
-
-      // Read unique valid years from the Years table.
-      const yearSet = new Set();
-      let invalidYears = 0;
-
-      for (let i = 0; i < rowCount(years); i++) {
-        const year = normalizeYear(years[CONFIG.yearColumn][i]);
-        if (year === null) {
-          if (years[CONFIG.yearColumn][i] !== null &&
-              years[CONFIG.yearColumn][i] !== undefined &&
-              years[CONFIG.yearColumn][i] !== "") {
-            invalidYears++;
-          }
-          continue;
-        }
-        yearSet.add(year);
-      }
-
-      const yearList = Array.from(yearSet).sort((a, b) => a - b);
-
-      // Build existing target keys and count any duplicates already present.
-      const existing = new Set();
-      const duplicateTargetKeys = new Set();
-
-      for (let i = 0; i < rowCount(yoy); i++) {
-        const canonicalID = normalizeText(yoy[CONFIG.canonicalIdColumn][i]);
-        const year = normalizeYear(yoy[CONFIG.yearColumn][i]);
-
-        if (!canonicalID || year === null) continue;
-
-        const key = `${canonicalID}|${year}`;
-        if (existing.has(key)) {
-          duplicateTargetKeys.add(key);
-        } else {
-          existing.add(key);
-        }
-      }
-
-      const targetHasAccountText = columnExists(yoy, CONFIG.accountNameColumn);
-      const missing = [];
-
-      for (const account of accountMap.values()) {
-        for (const year of yearList) {
-          const key = `${account.canonicalID}|${year}`;
-          if (!existing.has(key)) {
-            missing.push({
-              canonicalID: account.canonicalID,
-              accountName: account.accountName,
-              year
-            });
-          }
-        }
-      }
-
-      preview = {
-        accountsCount: accountMap.size,
-        yearsCount: yearList.length,
-        existingCount: existing.size,
-        missing,
-        blocked,
-        duplicateAccountIds: Array.from(duplicateAccountIds).sort(),
-        duplicateTargetKeysCount: duplicateTargetKeys.size,
-        blankAccountIds,
-        invalidYears,
-        targetHasAccountText
-      };
-
-      el.accountsCount.textContent = preview.accountsCount.toLocaleString();
-      el.yearsCount.textContent = preview.yearsCount.toLocaleString();
-      el.existingCount.textContent = preview.existingCount.toLocaleString();
-      el.missingCount.textContent = preview.missing.length.toLocaleString();
-
-      const notes = [];
-
-      if (preview.blocked) {
-        notes.push(
-          `STOP: Accounts contains duplicate CanonicalIDs (${preview.duplicateAccountIds.join(", ")}). ` +
-          `Fix those before syncing.`
-        );
-      } else if (preview.missing.length === 0) {
-        notes.push("Everything is already up to date. No rows need to be added.");
-      } else {
-        notes.push(
-          `${preview.missing.length.toLocaleString()} missing Account × Year row` +
-          `${preview.missing.length === 1 ? "" : "s"} ready to add.`
-        );
-      }
-
-      if (preview.duplicateTargetKeysCount > 0) {
-        notes.push(
-          `Warning: Account_YoY_Data already contains ${preview.duplicateTargetKeysCount.toLocaleString()} duplicate ` +
-          `CanonicalID + Year combination${preview.duplicateTargetKeysCount === 1 ? "" : "s"}. ` +
-          `This widget will not create additional duplicates.`
-        );
-      }
-
-      if (preview.blankAccountIds > 0) {
-        notes.push(
-          `${preview.blankAccountIds.toLocaleString()} Accounts row` +
-          `${preview.blankAccountIds === 1 ? " has" : "s have"} a blank CanonicalID and will be skipped.`
-        );
-      }
-
-      if (preview.invalidYears > 0) {
-        notes.push(
-          `${preview.invalidYears.toLocaleString()} invalid Year value` +
-          `${preview.invalidYears === 1 ? " was" : "s were"} ignored.`
-        );
-      }
-
-      setStatus(
-        notes.join("\n"),
-        preview.blocked ? "error" :
-          preview.duplicateTargetKeysCount > 0 || preview.blankAccountIds > 0 || preview.invalidYears > 0
-            ? "warn"
-            : "ok"
-      );
+      const next = await readPreviews();
+      paint(next);
+      status(notes(next), next.monthly.blocked || next.account.blocked ? "warn" : "ok");
     } catch (err) {
-      preview = null;
-      setStatus(`Could not build preview:\n${err && err.message ? err.message : String(err)}`, "error");
-      el.accountsCount.textContent = "—";
-      el.yearsCount.textContent = "—";
-      el.existingCount.textContent = "—";
-      el.missingCount.textContent = "—";
+      resetDisplay();
+      status(`Could not check tables: ${err && err.message ? err.message : String(err)}`, "error");
     } finally {
-      setBusy(false);
+      busy = false;
+      updateButtons();
     }
   }
 
-  async function syncMissing() {
-    if (busy || !preview || preview.blocked || preview.missing.length === 0) return;
-
-    const total = preview.missing.length;
-    const targetHasAccountText = preview.targetHasAccountText;
-
-    setBusy(true);
-
+  async function sync() {
+    if (busy) return;
+    busy = true;
+    updateButtons();
+    let addedMonthly = 0, addedAccounts = 0;
     try {
-      let added = 0;
-
-      for (let start = 0; start < total; start += CONFIG.batchSize) {
-        const batch = preview.missing.slice(start, start + CONFIG.batchSize);
-
-        const actions = batch.map(row => {
-          const values = {
-            [CONFIG.canonicalIdColumn]: row.canonicalID,
-            [CONFIG.yearColumn]: row.year
-          };
-
-          if (targetHasAccountText && row.accountName) {
-            values[CONFIG.accountNameColumn] = row.accountName;
+      // Always read again after the click; never trust a stale preview.
+      let next = await readPreviews();
+      paint(next);
+      if (!next.monthly.blocked) {
+        for (let start = 0; start < next.monthly.missing.length; start += CFG.batchSize) {
+          // Re-check live keys before every batch to avoid copying any pair twice.
+          const target = await grist.docApi.fetchTable(CFG.monthly);
+          const existing = new Set();
+          for (let i = 0; i < count(target); i++) {
+            const product = asRef(target.Product[i]), month = asMonth(target.Month[i]);
+            if (product && month !== null) existing.add(key(product, month));
           }
-
-          return ["AddRecord", CONFIG.yoyTable, null, values];
-        });
-
-        setStatus(
-          `Adding missing rows… ${added.toLocaleString()} of ${total.toLocaleString()} complete.`,
-          "warn"
-        );
-
-        await grist.docApi.applyUserActions(actions);
-        added += batch.length;
+          const batch = next.monthly.missing.slice(start, start + CFG.batchSize)
+            .filter(r => !existing.has(key(r.product, r.month)));
+          if (!batch.length) continue;
+          status(`Adding monthly rows: ${format(addedMonthly)} of ${format(next.monthly.missing.length)} confirmed…`, "warn");
+          await grist.docApi.applyUserActions(batch.map(r => ["AddRecord", CFG.monthly, null,
+            {Product: r.product, Month: r.month}]));
+          addedMonthly += batch.length;
+        }
       }
-
-      setStatus(
-        `Sync complete. Added ${added.toLocaleString()} missing Account × Year row` +
-        `${added === 1 ? "" : "s"}. Refreshing preview…`,
-        "ok"
-      );
-
-      // Re-read the document so a second click can never repeat the same rows.
-      await loadPreview();
-
-      if (preview && preview.missing.length === 0) {
-        setStatus(
-          `Sync complete. Added ${added.toLocaleString()} row${added === 1 ? "" : "s"}. ` +
-          `Account YoY is now fully synced.`,
-          preview.duplicateTargetKeysCount > 0 ? "warn" : "ok"
-        );
+      // Independently refresh the account preview after monthly writes. Do not run
+      // Account YoY while its existing duplicate-key issue remains unresolved.
+      next = await readPreviews();
+      paint(next);
+      if (!next.account.blocked) {
+        for (let start = 0; start < next.account.missing.length; start += CFG.batchSize) {
+          const target = await grist.docApi.fetchTable(CFG.yoy);
+          const existing = new Set();
+          for (let i = 0; i < count(target); i++) {
+            const id = text(target.CanonicalID[i]), year = asYear(target.Year[i]);
+            if (id && year !== null) existing.add(key(id, year));
+          }
+          const batch = next.account.missing.slice(start, start + CFG.batchSize)
+            .filter(r => !existing.has(key(r.id, r.year)));
+          if (!batch.length) continue;
+          status(`Adding account rows: ${format(addedAccounts)} of ${format(next.account.missing.length)} confirmed…`, "warn");
+          await grist.docApi.applyUserActions(batch.map(r => ["AddRecord", CFG.yoy, null,
+            Object.assign({CanonicalID: r.id, Year: r.year},
+              next.account.hasAccountName && r.name ? {Account: r.name} : {})]));
+          addedAccounts += batch.length;
+        }
       }
+      // IMPORTANT: verify from Grist before claiming the sync is complete.
+      const finalPreview = await readPreviews();
+      paint(finalPreview);
+      status(`Grist confirmed ${format(addedMonthly)} new monthly rows and ${format(addedAccounts)} new Account YoY rows.\n${notes(finalPreview)}`,
+        finalPreview.monthly.blocked || finalPreview.account.blocked ||
+        finalPreview.monthly.missing.length || finalPreview.account.missing.length ? "warn" : "ok");
     } catch (err) {
-      setStatus(
-        `Sync stopped because Grist returned an error.\n` +
-        `${err && err.message ? err.message : String(err)}\n\n` +
-        `Rows successfully added before the error will remain. Click Refresh preview before trying again.`,
-        "error"
-      );
+      // Some batches may already have saved. Don't replay them without a fresh read.
+      try {paint(await readPreviews());} catch (_) {resetDisplay();}
+      status(`Sync stopped: ${err && err.message ? err.message : String(err)}\nSome rows may have saved. Use Refresh preview before retrying.`, "error");
     } finally {
-      setBusy(false);
+      busy = false;
+      updateButtons();
     }
   }
 
-  el.refreshBtn.addEventListener("click", loadPreview);
-  el.syncBtn.addEventListener("click", syncMissing);
-
-  grist.ready({ requiredAccess: "full" });
-
-  // Build a preview as soon as Grist grants access.
-  loadPreview();
+  el.refreshBtn.addEventListener("click", refresh);
+  el.syncBtn.addEventListener("click", sync);
+  grist.ready({requiredAccess: "full"});
+  refresh();
 })();
 </script>
 </body>
