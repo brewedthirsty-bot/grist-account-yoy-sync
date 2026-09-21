@@ -257,7 +257,7 @@
       const id = text(accounts.CanonicalID[i]);
       if (!id) {blankAccounts++; continue;}
       if (accountMap.has(id)) {duplicateAccounts.add(id); continue;}
-      accountMap.set(id, {id, name: hasCol(accounts,"Account") ? text(accounts.Account[i]) : ""});
+      accountMap.set(id, {id});
     }
     const yearSet = new Set();
     let invalidYears = 0;
@@ -287,8 +287,7 @@
       duplicateAccounts.size > 0 || invalidYears > 0 || malformed > 0 || duplicates.size > 0;
     return {accounts: accountMap.size, years: yearSet.size, existing: existing.size,
       missing, duplicateCount: duplicates.size, duplicateAccounts: duplicateAccounts.size,
-      blankAccounts, invalidYears, malformed, blocked,
-      hasAccountName: hasCol(yoy, "Account")};
+      blankAccounts, invalidYears, malformed, blocked};
   }
 
   async function readPreviews() {
@@ -403,8 +402,7 @@
           if (!batch.length) continue;
           status(`Adding account rows: ${format(addedAccounts)} of ${format(next.account.missing.length)} confirmed…`, "warn");
           await grist.docApi.applyUserActions(batch.map(r => ["AddRecord", CFG.yoy, null,
-            Object.assign({CanonicalID: r.id, Year: r.year},
-              next.account.hasAccountName && r.name ? {Account: r.name} : {})]));
+            {CanonicalID: r.id, Year: r.year}]));
           addedAccounts += batch.length;
         }
       }
