@@ -133,7 +133,7 @@
   setInterval(autoCheck, 60000);
   document.addEventListener('visibilitychange', autoCheck);
   window.addEventListener('focus', autoCheck);
-  if (!window.grist) { status('The Grist plugin API could not load. Check your internet connection and reload this page.', 'error'); buttons(); return; }
+  if (!window.grist) { status('The Grist connection script did not load. Reload this widget to try again.', 'error'); buttons(); return; }
   grist.onOptions((saved, interaction) => {
     access = (interaction?.access_level || interaction?.accessLevel) === 'full';
     lastSyncLabel(); buttons();

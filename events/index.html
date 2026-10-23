@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://docs.getgrist.com; style-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <!-- Grist's official API bundle uses eval; keep script origins restricted while allowing its runtime. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://docs.getgrist.com 'unsafe-eval'; style-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
   <title>FDR Event Sync</title>
   <link rel="stylesheet" href="style.css">
   <script defer src="https://docs.getgrist.com/grist-plugin-api.js"></script>
@@ -49,7 +50,7 @@
     <p>Grant this custom widget <strong>Full document access</strong> in Grist so it can update Events and Venues.</p>
   </details>
   <details id="reviewDetails"><summary id="reviewTitle">Listings needing review</summary><ul id="reviewList"></ul></details>
-  <footer>Event Sync · v1.0.0</footer>
+  <footer>Event Sync · v1.0.1</footer>
 </main>
 </body>
 </html>

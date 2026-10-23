@@ -43,9 +43,14 @@ No build or production dependencies. Grist's official plugin API is the only ext
 node --test tests/event-sync.test.js
 # With Playwright installed:
 node tests/browser.test.js
+# Also check the actual official API bundle under the widget's CSP:
+curl --fail --location https://docs.getgrist.com/grist-plugin-api.js --output /tmp/grist-plugin-api.js
+SYNC_GRIST_API_PATH=/tmp/grist-plugin-api.js node tests/plugin-api.test.js
 ```
 
 Tests cover CSV quoting/newlines, validation failures, partial sources, date/timestamp/boolean conversions, idempotence, key collisions, preservation of manual data and references, optional checks, failed verification, authenticated snapshot reads, and the browser connection/sync/reopen workflow. Browser tests use synthetic data and a fake read token; they never connect to a real Grist document. A live Grist Desktop connection still needs to be verified on the user's computer.
+
+The separate plugin API regression test executes the freshly downloaded official Grist bundle, rather than replacing it with the document mock. This checks CSP compatibility. The current official bundle uses `eval`, so `script-src` must allow `unsafe-eval`; script origins remain restricted to this widget and docs.getgrist.com. Version 1.0.1 fixes the original policy that blocked that bundle before `window.grist` was created.
 
 Primary API references:
 - https://support.getgrist.com/widget-custom/
