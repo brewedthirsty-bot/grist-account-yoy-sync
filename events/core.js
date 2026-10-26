@@ -79,16 +79,34 @@
     const venueMap = unique(venues, 'Venue_Key', 'GitHub Venues');
     const eventMap = unique(events, 'Event_Key', 'GitHub Events');
     const checkMap = unique(checks, 'Source_Key', 'GitHub Source_Checks');
-    assert(venues.length === 3 && checks.length >= 3, 'The event snapshot is missing venues or source checks.');
+    assert(venues.length >= 3 && checks.length >= venues.length, 'The event snapshot is missing venues or source checks.');
+    if (report.venue_keys !== undefined) {
+      assert(Array.isArray(report.venue_keys) && new Set(report.venue_keys).size === venues.length && report.venue_keys.length === venues.length && report.venue_keys.every(k => venueMap.has(k)), 'The venue list does not match the collector report.');
+    }
     assert(Number.isSafeInteger(report.history_events) && report.history_events === events.length, 'The event count does not match the collector report.');
     assert(Array.isArray(report.sources) && report.sources.length === checks.length && typeof report.success === 'boolean', 'Incomplete collector report.');
     unique(report.sources, 'source_key', 'Collector report');
+    const desktopSources = report.desktop_sources || [];
+    assert(Array.isArray(desktopSources), 'Invalid desktop source settings.');
+    const desktopMap = unique(desktopSources, 'source_key', 'Desktop sources');
+    if (report.deferred_sources !== undefined) assert(report.deferred_sources === desktopSources.length, 'Desktop source count does not match.');
+    for (const source of desktopSources) {
+      assert(source.source_key === 'source:fishers_city_amp' && source.key === 'venue:npd_amphitheater' && source.venue_id === '74128' && source.timezone === 'America/Indiana/Indianapolis' && source.adapter === 'grist_tribe', 'Unsupported desktop calendar settings.');
+      assert(source.source_url === 'https://fishersin.gov/wp-json/tribe/events/v1/events/', 'Unexpected desktop calendar address.');
+      for (const [id, key] of Object.entries(source.event_key_aliases || {})) assert(/^\d+$/.test(id) && /^event:[a-f0-9]{32}$/.test(key), 'Invalid desktop event alias.');
+    }
     const checked = stampSeconds(report.checked_utc) * 1000;
     assert(checked <= now + 300000, 'The collector report is dated in the future.');
     let failed = 0;
     for (const s of report.sources) {
-      assert(typeof s.success === 'boolean' && checkMap.has(s.source_key), 'Source report and checks do not match.');
+      assert(checkMap.has(s.source_key), 'Source report and checks do not match.');
       const check = checkMap.get(s.source_key);
+      if (desktopMap.has(s.source_key)) {
+        assert(s.success === null && s.execution === 'grist' && check.Latest_Check_Status === 'Desktop', 'Desktop source is incorrectly reported as a server success.');
+        if (check.Last_Attempt_UTC) assert(stampSeconds(check.Last_Attempt_UTC) * 1000 <= checked, 'Desktop attempt is newer than the report.');
+        continue;
+      }
+      assert(typeof s.success === 'boolean', 'Source report and checks do not match.');
       assert((check.Latest_Check_Status === 'Success') === s.success && (s.success || check.Latest_Check_Status === 'Failed'), 'Source status does not match the collector report.');
       assert(stampSeconds(check.Last_Attempt_UTC) * 1000 === checked, 'Source attempts are from a different collector run.');
       if (!s.success) failed++;
@@ -116,8 +134,8 @@
     assert(Number.isSafeInteger(report.current_events) && report.sources.filter(s => s.success).reduce((n, s) => n + s.included, 0) === report.current_events, 'The returned event count does not match the report.');
     const warnings = [];
     if (now - checked > 36 * 3600000) warnings.push('The collector snapshot is over 36 hours old.');
-    for (const c of checks) if (c.Latest_Check_Status !== 'Success') warnings.push(`${c.Venue}: ${c.Latest_Error || 'source check failed'}. Last successful check: ${c.Last_Checked_UTC || 'never'}.`);
-    return {sha, checkedUTC: report.checked_utc, venues, events, checks, report, warnings, eventMap};
+    for (const c of checks) if (!['Success', 'Desktop'].includes(c.Latest_Check_Status)) warnings.push(`${c.Venue}: ${c.Latest_Error || 'source check failed'}. Last successful check: ${c.Last_Checked_UTC || 'never'}.`);
+    return {sha, checkedUTC: report.checked_utc, venues, events, checks, report, warnings, eventMap, desktopSources, skipSources: new Set(desktopSources.map(s => s.source_key))};
   }
 
   async function loadSnapshot(token, fetcher = fetch, now = Date.now()) {
@@ -188,12 +206,16 @@
   }
   function planSync(snapshot, doc) {
     const actions = [], tables = [], warnings = [...snapshot.warnings];
-    const sourceData = {Venues: snapshot.venues, Events: snapshot.events, Source_Checks: snapshot.checks};
+    const sourceData = {Venues: snapshot.venues, Events: snapshot.events.filter(e => !snapshot.skipSources?.has(e.Source_Key)), Source_Checks: snapshot.checks};
+    for (const source of snapshot.desktopSources || []) if (!snapshot.desktopResults?.[source.source_key]) warnings.push(`${source.name}: a direct calendar check is required before its events can update.`);
     for (const spec of SPECS) {
-      if (!doc.tables.includes(spec.table) && spec.optional) continue;
-      const tableMeta = doc.data._grist_Tables.find(t => t.tableId === spec.table);
+      const addChecks = spec.table === 'Source_Checks' && !doc.tables.includes(spec.table) && snapshot.desktopSources?.length;
+      if (!doc.tables.includes(spec.table) && spec.optional && !addChecks) continue;
+      const newColumns = addChecks ? CHECK_FIELDS.map(colId => ({colId, type: INT_FIELDS.has(colId) ? 'Int' : 'Text', isFormula: false, formula: ''})) : [];
+      if (addChecks) actions.push(['AddTable', 'Source_Checks', newColumns.map(c => ({id: c.colId, type: c.type, isFormula: false}))]);
+      const tableMeta = addChecks ? {id: -1, summarySourceTable: 0} : doc.data._grist_Tables.find(t => t.tableId === spec.table);
       assert(tableMeta && !tableMeta.summarySourceTable, `${spec.table} must be a regular data table.`);
-      const columns = new Map(doc.data._grist_Tables_column.filter(c => c.parentId === tableMeta.id).map(c => [c.colId, c]));
+      const columns = new Map((addChecks ? newColumns : doc.data._grist_Tables_column.filter(c => c.parentId === tableMeta.id)).map(c => [c.colId, c]));
       if (spec.table === 'Events' && !columns.has('Source_Review_Note')) {
         columns.set('Source_Review_Note', {colId: 'Source_Review_Note', type: 'Text', isFormula: false, formula: ''});
         actions.push(['AddColumn', 'Events', 'Source_Review_Note', {type: 'Text', isFormula: false, label: 'Source Review Note'}]);
@@ -205,7 +227,7 @@
         assert(allowedTypes(f).includes(col.type.split(':')[0]), `${spec.table}.${f} is ${col.type}. Change it to ${allowedTypes(f).join(' or ')} before syncing.`);
         if (f === 'Event_Date' && col.type === 'Text') warnings.push('Events.Event_Date is Text. Convert it to Date to link events to Calendar.');
       }
-      const existing = unique(doc.data[spec.table], spec.key, `Grist ${spec.table}`);
+      const existing = unique(addChecks ? [] : doc.data[spec.table], spec.key, `Grist ${spec.table}`);
       let added = 0, updated = 0, unchanged = 0, retained = 0;
       const newKeys = new Set();
       for (const row of sourceData[spec.table]) {
@@ -224,7 +246,7 @@
         // Never update an arbitrary row if another client created duplicate keys.
         actions.push(['AddOrUpdateRecord', spec.table, {[spec.key]: key}, values, {on_many: 'none'}]);
       }
-      for (const k of existing.keys()) if (!newKeys.has(k)) retained++;
+      for (const k of existing.keys()) if (!newKeys.has(k) && !snapshot.skipSources?.has(existing.get(k).Source_Key)) retained++;
       if (retained) warnings.push(`${spec.table}: ${retained} local rows are absent from this snapshot and will be retained.`);
       tables.push({table: spec.table, added, updated, unchanged, retained, total: sourceData[spec.table].length});
     }
@@ -238,7 +260,7 @@
       const missing = snapshot.events.filter(e => !dates.has(e.Event_Date)).length;
       if (missing) warnings.push(`${missing} event listings fall outside the dates in Calendar. Extend Calendar before comparing their sales.`);
     }
-    return {actions, tables, warnings, addsReviewColumn: actions.some(a => a[0] === 'AddColumn')};
+    return {actions, tables, warnings, addsReviewColumn: actions.some(a => a[0] === 'AddColumn'), addsSourceChecks: actions.some(a => a[0] === 'AddTable')};
   }
   async function syncSnapshot(api, snapshot) {
     // Read again at write time; a preview is never used as a write plan.

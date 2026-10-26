@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <!-- Grist's official API bundle uses eval; keep script origins restricted while allowing its runtime. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://docs.getgrist.com 'unsafe-eval'; style-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://docs.getgrist.com 'unsafe-eval'; style-src 'self'; connect-src https://api.github.com https://fishersin.gov; base-uri 'none'; form-action 'none'">
   <title>FDR Event Sync</title>
   <link rel="stylesheet" href="style.css">
   <script defer src="https://docs.getgrist.com/grist-plugin-api.js"></script>
-  <script defer src="core.js"></script>
-  <script defer src="ui.js"></script>
+  <script defer src="core.js?v=1.2.0"></script>
+  <script defer src="desktop.js?v=1.2.0"></script>
+  <script defer src="ui.js?v=1.2.0"></script>
 </head>
 <body>
 <main>
@@ -44,13 +45,14 @@
     <p class="fine">The token is sent only to GitHub. “Remember” saves it in this widget’s local browser storage. It is never saved in your Grist document or the widget code. Use a read-only token, not your Ticketmaster key.</p>
   </details>
   <details><summary>How updates work</summary>
-    <p>GitHub collects venue listings daily. After your first verified sync, this page checks on opening and every 30 minutes while visible. It also checks when you return after 30 minutes. Grist must be running with this page visible.</p>
+    <p>GitHub collects Fishers Event Center, Ruoff, Riverview Health Arena at Innovation Mile, and AMP's Ticketmaster listings daily. This page fetches the AMP city calendar directly from your computer because the city does not accept GitHub server requests.</p>
+    <p>After your first verified sync, this page checks on opening and every 30 minutes while visible. It also checks when you return after 30 minutes. Grist must be running with this page visible.</p>
     <p>The preview shows new and changed events. Sync matches Event_Key and Venue_Key, updates source fields, and keeps existing row IDs. Your Review_Note and any extra note, reference, or formula columns are preserved. Updated collector notes go into Source_Review_Note, which is added on the first sync.</p>
-    <p>If Source_Checks is already imported, it is also updated. Source status is shown here either way. Calendar and restaurant sales are not changed by this widget.</p>
+    <p>Source_Checks stores the latest feed status and is added on the first direct AMP sync if needed. If AMP cannot load, its saved Grist events are retained while the other feeds update. Calendar and restaurant sales are not changed by this widget.</p>
     <p>Grant this custom widget <strong>Full document access</strong> in Grist so it can update Events and Venues.</p>
   </details>
   <details id="reviewDetails"><summary id="reviewTitle">Listings needing review</summary><ul id="reviewList"></ul></details>
-  <footer>Event Sync · v1.0.1</footer>
+  <footer>Event Sync · v1.2.0</footer>
 </main>
 </body>
 </html>

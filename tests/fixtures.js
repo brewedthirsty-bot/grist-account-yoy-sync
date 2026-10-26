@@ -62,7 +62,13 @@ function mockAPI(doc) {
     applyUserActions: async actions => {
       const next = structuredClone(state);
       for (const [action, table, keyOrName, values] of actions) {
-        if (action === 'AddColumn') {
+        if (action === 'AddTable') {
+          if (next.tables.includes(table)) throw new Error('Table exists');
+          const ref = Math.max(0,...next.data._grist_Tables.map(t => t.id)) + 1;
+          next.tables.push(table); next.data[table] = [];
+          next.data._grist_Tables.push({id:ref,tableId:table,summarySourceTable:0});
+          for (const col of keyOrName) next.data._grist_Tables_column.push({id:next.data._grist_Tables_column.length + 1,parentId:ref,colId:col.id,formula:'',...col});
+        } else if (action === 'AddColumn') {
           if (next.data._grist_Tables_column.some(c => c.parentId === next.data._grist_Tables.find(t => t.tableId === table).id && c.colId === keyOrName)) throw new Error('Column exists');
           next.data._grist_Tables_column.push({id: 999, parentId: next.data._grist_Tables.find(t => t.tableId === table).id, colId: keyOrName, formula: '', ...values});
           for (const row of next.data[table]) row[keyOrName] = '';

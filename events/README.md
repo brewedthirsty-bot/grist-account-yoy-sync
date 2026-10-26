@@ -2,7 +2,9 @@
 
 Custom widget for the **FDR Restaurant Sales** Grist Desktop document. The older Reporting Sync at the repository root is unchanged.
 
-Widget URL: https://brewedthirsty-bot.github.io/grist-account-yoy-sync/events/
+Widget URL: https://brewedthirsty-bot.github.io/grist-account-yoy-sync/events/?v=1.2.0
+
+Version 1.2 adds **Riverview Health Arena at Innovation Mile** as a fourth venue and direct AMP city collection. GitHub servers receive HTTP 403 from the city calendar, including its public export links. The advertised city REST API permits normal browser CORS requests from this widget's origin. The page therefore fetches AMP directly on the Grist computer without credentials; GitHub continues the other feeds. The live direct connection still needs verification in the user's Grist app.
 
 ## Add to Grist
 
@@ -16,7 +18,7 @@ After the first verified sync, automatic checks run on page opening and every 30
 
 ## Tables and types
 
-Requires `Events` and `Venues` from the collector's CSVs. IDs must match the original CSV column IDs. `Event_Key`, `Venue_Key`, `Source_Key`, and `Source_Event_ID` remain **Text**. References belong in additional columns. If an existing `Source_Checks` table is present, it is updated too; otherwise source status is shown in the widget without requiring another table.
+Requires `Events` and `Venues` from the collector's CSVs. IDs must match the original CSV column IDs. `Event_Key`, `Venue_Key`, `Source_Key`, and `Source_Event_ID` remain **Text**. References belong in additional columns. The first direct AMP sync creates **Source_Checks** if missing, so local city freshness and failures persist in the document. An existing compatible table is reused. No repeat CSV import or new GitHub token is needed for the fourth venue.
 
 `Event_Date` supports Date or Text; Date is recommended for Calendar references. `Currently_Listed` and `Review_Required` support Toggle/Bool or Text. Source timestamps support Text or DateTime; empty timestamps remain empty. Source counts support Integer, Numeric, or Text. Other source columns must be Text. The widget checks metadata and pauses on incompatible types, formula-managed source columns, missing keys, and duplicates.
 
@@ -26,6 +28,9 @@ The first sync adds **Events.Source_Review_Note** (Text) and copies current coll
 
 - Reads the branch head, then downloads Venues, Events, Source_Checks, and run_report from **that same commit** using GitHub's authenticated Contents API. All requests are GET, with redirects prohibited. No token is put in a URL.
 - Checks CSV structure, stable keys, venue/source links, dates, flags, report counts, and source-attempt timestamps before planning writes. A partial collector report is allowed and displayed explicitly.
+- Validates the report's declared venue keys, allowing the fourth venue without removing the completeness check. A city source with `success: null` must be explicitly delegated to Grist; it is never treated as a successful GitHub refresh.
+- Fetches the advertised City of Fishers REST API through normal browser CORS: GET, no credentials or Authorization header, no redirects, no proxy, no altered browser identity. A paginated complete response is required. City IDs and the 21 original key aliases produce the same Event_Key values as the Python collector.
+- Combines direct city results with Grist's saved city history. Preserves first-seen times, local row IDs and notes; flags changed dates/times and missing future listings. If the city check fails, skips every city event write while saving a failed Source_Checks attempt and allowing the working server feeds to update. The older GitHub city snapshot cannot overwrite newer Grist records. Direct city data stays in Grist and is not uploaded to GitHub.
 - Re-reads Grist at write time. Writes only changed/new source rows in one `applyUserActions` transaction. Uses `AddOrUpdateRecord` with the text key as `require` and `on_many: none`; matching happens in Grist, preventing blind duplicate insertion after a stale preview.
 - Reads Grist again and only reports verified success if the new plan contains no writes. A failure never implies rollback unless Grist confirms it; retry starts with fresh reads.
 - Preserves row IDs, extra note/reference/formula columns, all Calendar values, and all sales data. Never deletes rows. Local keys missing from a snapshot are retained and reported.
@@ -40,9 +45,10 @@ The HTML/JS/CSS are public widget code. Venue data remains in the private collec
 No build or production dependencies. Grist's official plugin API is the only external script.
 
 ```sh
-node --test tests/event-sync.test.js
+node --test tests/event-sync.test.js tests/desktop-sync.test.js
 # With Playwright installed:
 node tests/browser.test.js
+SYNC_BROWSER_DESKTOP=1 node tests/browser.test.js
 # Also check the actual official API bundle under the widget's CSP:
 curl --fail --location https://docs.getgrist.com/grist-plugin-api.js --output /tmp/grist-plugin-api.js
 SYNC_GRIST_API_PATH=/tmp/grist-plugin-api.js node tests/plugin-api.test.js

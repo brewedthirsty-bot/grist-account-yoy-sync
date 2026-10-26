@@ -43,12 +43,12 @@
     el.reviewCount.textContent = review.length.toLocaleString();
     el.snapshotTime.textContent = `Collector snapshot: ${localTime(snapshot.checkedUTC)}`;
     el.sources.replaceChildren();
-    const labels = {'source:fishers_city_amp': 'AMP · City calendar', 'source:amp_ticketmaster': 'AMP · Ticketmaster', 'source:fec_ticketmaster': 'Fishers Event Center', 'source:ruoff_official': 'Ruoff Music Center'};
+    const labels = {'source:fishers_city_amp': 'AMP · City calendar', 'source:amp_ticketmaster': 'AMP · Ticketmaster', 'source:fec_ticketmaster': 'Fishers Event Center', 'source:ruoff_official': 'Ruoff Music Center', 'source:riverview_ticketmaster': 'Riverview Health Arena at Innovation Mile'};
     for (const source of snapshot.checks) {
       const row = document.createElement('tr');
       const old = !source.Last_Checked_UTC || Date.now() - Date.parse(source.Last_Checked_UTC) > 36 * 3600000;
       const failed = source.Latest_Check_Status !== 'Success';
-      const state = failed ? 'Failed · older data' : old ? 'Stale' : 'Success';
+      const state = source.Latest_Check_Status === 'Desktop' ? 'Checks in this page' : failed ? 'Failed · older data' : old ? 'Stale' : 'Success';
       const values = [labels[source.Source_Key] || source.Venue, state, source.Events_Returned, localTime(source.Last_Checked_UTC)];
       values.forEach((v, i) => {
         const td = document.createElement('td'); td.textContent = v;
@@ -70,6 +70,7 @@
   function previewText(plan) {
     const lines = plan.tables.map(t => `${t.table}: ${t.added} new, ${t.updated} changed, ${t.unchanged} already match.`);
     if (plan.addsReviewColumn) lines.push('First sync adds Source_Review_Note for refreshed collector notes. Your existing Review_Note is preserved.');
+    if (plan.addsSourceChecks) lines.push('Adds Source_Checks to keep the latest feed status, including direct AMP checks.');
     return lines.join('\n');
   }
   async function run(write) {
@@ -79,8 +80,11 @@
     status(write ? 'Checking GitHub and Grist before syncing…' : 'Loading the latest GitHub snapshot…');
     try {
       const work = async () => {
-        const snapshot = await core.loadSnapshot(token);
-        const plan = core.planSync(snapshot, await core.readDocument(grist.docApi));
+        const repoSnapshot = await core.loadSnapshot(token);
+        const doc = await core.readDocument(grist.docApi);
+        if (repoSnapshot.desktopSources.length) status('Checking the public AMP city calendar from this computer…');
+        const snapshot = await EventDesktop.refreshDesktopSources(repoSnapshot, doc);
+        const plan = core.planSync(snapshot, doc);
         paint(snapshot, plan);
         if (!write) {
           status([previewText(plan), ...plan.warnings].join('\n\n'), plan.warnings.length ? 'warn' : 'ok');
