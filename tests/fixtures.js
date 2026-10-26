@@ -60,6 +60,11 @@ function mockAPI(doc) {
     listTables: async () => [...state.tables],
     fetchTable: async name => structuredClone(columns(state.data[name] || [], state.data._grist_Tables_column.filter(c => c.parentId === state.data._grist_Tables.find(t => t.tableId === name)?.id).map(c => c.colId))),
     applyUserActions: async actions => {
+      const upserts = new Set(['AddOrUpdateRecord','BulkAddOrUpdateRecord']);
+      const dataActions = new Set([...upserts,'AddRecord','BulkAddRecord','UpdateRecord','BulkUpdateRecord','RemoveRecord','BulkRemoveRecord']);
+      if (actions.some(a => upserts.has(a[0])) && actions.some(a => !dataActions.has(a[0]))) {
+        throw new Error('Can only combine AddOrUpdateRecord and BulkAddOrUpdateRecord with simple data changes');
+      }
       const next = structuredClone(state);
       for (const [action, table, keyOrName, values] of actions) {
         if (action === 'AddTable') {

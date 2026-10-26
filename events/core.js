@@ -264,11 +264,20 @@
   }
   async function syncSnapshot(api, snapshot) {
     // Read again at write time; a preview is never used as a write plan.
-    const before = planSync(snapshot, await readDocument(api));
+    let before = planSync(snapshot, await readDocument(api));
+    const isSetup = action => ['AddTable','AddColumn'].includes(action[0]);
+    const setupActions = before.actions.filter(isSetup);
+    if (setupActions.length) {
+      // Grist forbids mixing schema actions with AddOrUpdateRecord. Commit only
+      // the table/column setup, then rebuild the data plan from actual metadata.
+      await api.applyUserActions(setupActions);
+      before = planSync(snapshot, await readDocument(api));
+      assert(!before.actions.some(isSetup), 'Grist table/column setup was not confirmed. Refresh the preview before retrying.');
+    }
     if (before.actions.length) await api.applyUserActions(before.actions);
     const after = planSync(snapshot, await readDocument(api));
     assert(!after.actions.length, 'Grist verification did not match the snapshot. Refresh the preview before retrying.');
-    return {before, after};
+    return {before, after, setupActions};
   }
   return {REPO, SPECS, EVENT_FIELDS, VENUE_FIELDS, CHECK_FIELDS, parseCSV, dateSeconds, stampSeconds, unique, validateSnapshot, loadSnapshot, readDocument, planSync, syncSnapshot};
 });

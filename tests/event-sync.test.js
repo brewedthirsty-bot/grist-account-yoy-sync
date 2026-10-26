@@ -29,8 +29,10 @@ test('sync preserves row IDs, manual notes, extra reference/formula fields, Cale
   assert.equal(api.state.data.Events[0].Review_Note, 'My own event note'); assert.equal(api.state.data.Events[0].Local_Notes, 'Keep me'); assert.equal(api.state.data.Events[0].Calendar_Day, 99);
   assert.equal(api.state.data.Events[1].Source_Review_Note, s.events[1].Review_Note);
   assert.deepEqual(api.state.data.Calendar, calendar); assert.deepEqual(api.state.data.Daily_Sales, sales);
-  assert.equal(api.writes.length, 1); // One transaction includes the new notes column.
-  await core.syncSnapshot(api, s); assert.equal(api.writes.length, 1); // No-op second sync.
+  assert.equal(api.writes.length, 2); // Schema setup and row updates use separate transactions.
+  assert(api.writes[0].every(a => ['AddColumn','AddTable'].includes(a[0])));
+  assert(api.writes[1].every(a => a[0] === 'AddOrUpdateRecord'));
+  await core.syncSnapshot(api, s); assert.equal(api.writes.length, 2); // No-op second sync.
 });
 test('adds missing keys and updates rescheduled events without deleting local rows', async () => {
   const s = snapshot(), doc = documentFixture(s, {empty: true}); const api = mockAPI(doc);
@@ -57,16 +59,51 @@ test('optional Source_Checks is updated when present', async () => {
 });
 test('server key matching avoids duplicate adds after a stale preview', async () => {
   const s = snapshot(), api = mockAPI(documentFixture(s, {empty: true})); const original = api.applyUserActions;
+  let inserted = false;
   api.applyUserActions = async actions => {
-    api.state.data.Events.push({id: 777, Event_Key: s.events[0].Event_Key, Review_Note: 'Added by another client'});
+    if (!inserted && actions.some(a => a[0] === 'AddOrUpdateRecord')) {
+      inserted = true; api.state.data.Events.push({id: 777, Event_Key: s.events[0].Event_Key, Review_Note: 'Added by another client'});
+    }
     await original(actions);
   };
   await core.syncSnapshot(api, s); assert.equal(api.state.data.Events.filter(e => e.Event_Key === s.events[0].Event_Key).length, 1); assert.equal(api.state.data.Events[0].id, 777);
 });
 test('a failed write or mismatched verification cannot report success', async () => {
-  const s = snapshot(), api = mockAPI(documentFixture(s)); api.applyUserActions = async () => {throw new Error('Denied');};
+  const s = snapshot(), api = mockAPI(documentFixture(s)), original = api.applyUserActions;
+  api.applyUserActions = async () => {throw new Error('Denied');};
   await assert.rejects(core.syncSnapshot(api, s), /Denied/);
-  api.applyUserActions = async () => {}; await assert.rejects(core.syncSnapshot(api, s), /verification/);
+  api.applyUserActions = async actions => {if (actions.some(a => a[0] === 'AddColumn')) await original(actions);};
+  await assert.rejects(core.syncSnapshot(api, s), /verification/);
+});
+test('mixed schema and upsert bundles reproduce the Grist rejection without saving rows', async () => {
+  const api = mockAPI(documentFixture(snapshot())), previous = structuredClone(api.state);
+  await assert.rejects(api.applyUserActions([
+    ['AddColumn','Events','Source_Review_Note',{type:'Text',isFormula:false}],
+    ['AddOrUpdateRecord','Events',{Event_Key:'event:1'},{Event_Name:'Should not save'},{on_many:'none'}]
+  ]), /Can only combine AddOrUpdateRecord/);
+  assert.deepEqual(api.state,previous);assert.equal(api.writes.length,0);
+});
+test('failed row write after setup can retry without repeating schema creation or duplicating events', async () => {
+  const s = snapshot(), api = mockAPI(documentFixture(s)), original = api.applyUserActions;
+  let rejectData = true;
+  api.applyUserActions = async actions => {
+    if (rejectData && actions.some(a => a[0] === 'AddOrUpdateRecord')) throw new Error('Data write interrupted');
+    await original(actions);
+  };
+  await assert.rejects(core.syncSnapshot(api,s), /Data write interrupted/);
+  assert.equal(api.writes.length,1);assert(api.writes[0].every(a => a[0] === 'AddColumn'));
+  rejectData = false;await core.syncSnapshot(api,s);
+  assert.equal(api.writes.length,2);assert.equal(api.state.data.Events.length,s.events.length);
+  assert.equal(api.writes.flat().filter(a => a[0] === 'AddColumn').length,1);
+});
+test('sync revalidates live keys after schema setup before any row writes', async () => {
+  const s = snapshot(), api = mockAPI(documentFixture(s)), original = api.applyUserActions;
+  api.applyUserActions = async actions => {
+    await original(actions);
+    if (actions.some(a => a[0] === 'AddColumn')) api.state.data.Events.push({...api.state.data.Events[0],id:999});
+  };
+  await assert.rejects(core.syncSnapshot(api,s), /duplicate Event_Key/);
+  assert.equal(api.writes.length,1);assert(api.writes[0].every(a => a[0] === 'AddColumn'));
 });
 test('network reads one commit snapshot and never sends credentials to another host', async () => {
   const f = fixture(), calls = [];

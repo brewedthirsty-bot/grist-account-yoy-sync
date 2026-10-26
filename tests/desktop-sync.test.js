@@ -37,6 +37,10 @@ test('AMP sync creates source checks, preserves manual notes, retains local new 
   doc.data.Events[2].Review_Note = 'My own note'; const api = mockAPI(doc);
   let next = await desktop.refreshDesktopSources(s,await core.readDocument(api),fetchCity([raw(),raw(43)]),NOW);
   await core.syncSnapshot(api,next);
+  assert.equal(api.writes.length,2);
+  assert(api.writes[0].some(a => a[0] === 'AddTable'));
+  assert(api.writes[0].every(a => ['AddTable','AddColumn'].includes(a[0])));
+  assert(api.writes[1].every(a => a[0] === 'AddOrUpdateRecord'));
   const newKey = await desktop.stableKey(source,'43'), firstSeen = api.state.data.Events.find(r => r.Event_Key === newKey).First_Seen_UTC;
   assert(api.state.tables.includes('Source_Checks'));assert.equal(api.state.data.Events[2].Review_Note,'My own note');
   assert.equal(api.state.data.Source_Checks.find(c => c.Source_Key === source.source_key).Latest_Check_Status,'Success');

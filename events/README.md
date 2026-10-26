@@ -2,7 +2,7 @@
 
 Custom widget for the **FDR Restaurant Sales** Grist Desktop document. The older Reporting Sync at the repository root is unchanged.
 
-Widget URL: https://brewedthirsty-bot.github.io/grist-account-yoy-sync/events/?v=1.2.0
+Widget URL: https://brewedthirsty-bot.github.io/grist-account-yoy-sync/events/?v=1.2.1
 
 Version 1.2 adds **Riverview Health Arena at Innovation Mile** as a fourth venue and direct AMP city collection. GitHub servers receive HTTP 403 from the city calendar, including its public export links. The advertised city REST API permits normal browser CORS requests from this widget's origin. The page therefore fetches AMP directly on the Grist computer without credentials; GitHub continues the other feeds. The live direct connection still needs verification in the user's Grist app.
 
@@ -31,7 +31,7 @@ The first sync adds **Events.Source_Review_Note** (Text) and copies current coll
 - Validates the report's declared venue keys, allowing the fourth venue without removing the completeness check. A city source with `success: null` must be explicitly delegated to Grist; it is never treated as a successful GitHub refresh.
 - Fetches the advertised City of Fishers REST API through normal browser CORS: GET, no credentials or Authorization header, no redirects, no proxy, no altered browser identity. A paginated complete response is required. City IDs and the 21 original key aliases produce the same Event_Key values as the Python collector.
 - Combines direct city results with Grist's saved city history. Preserves first-seen times, local row IDs and notes; flags changed dates/times and missing future listings. If the city check fails, skips every city event write while saving a failed Source_Checks attempt and allowing the working server feeds to update. The older GitHub city snapshot cannot overwrite newer Grist records. Direct city data stays in Grist and is not uploaded to GitHub.
-- Re-reads Grist at write time. Writes only changed/new source rows in one `applyUserActions` transaction. Uses `AddOrUpdateRecord` with the text key as `require` and `on_many: none`; matching happens in Grist, preventing blind duplicate insertion after a stale preview.
+- Re-reads Grist at write time. Creates required tables/columns in a separate setup transaction, then re-reads and validates the actual schema and keys. Grist forbids combining schema changes with `AddOrUpdateRecord`; version 1.2.1 separates those phases. Changed/new source rows are written in one data-only `applyUserActions` transaction, matching the text key with `on_many: none`. Matching happens in Grist, preventing blind duplicate insertion after a stale preview. If data writes fail after setup, a fresh retry reuses the existing schema.
 - Reads Grist again and only reports verified success if the new plan contains no writes. A failure never implies rollback unless Grist confirms it; retry starts with fresh reads.
 - Preserves row IDs, extra note/reference/formula columns, all Calendar values, and all sales data. Never deletes rows. Local keys missing from a snapshot are retained and reported.
 - Refreshes source-owned event status/metadata and the separate source review notes. Manual changes in other **source-owned** fields are intentionally replaced by the collector on the next sync.
