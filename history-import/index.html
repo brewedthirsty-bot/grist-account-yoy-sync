@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://docs.getgrist.com 'unsafe-eval'; style-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>FDR History Import</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+  <script type="module" src="widget.mjs"></script>
+</head>
+<body><main>
+  <header><p class="eyebrow">FDR RESTAURANT SALES</p><h1>History Import</h1>
+    <p>Add reviewed daily history to this DSR.</p></header>
+  <label for="package">Prepared history file</label>
+  <input id="package" type="file" accept=".json,application/json">
+  <div class="actions"><button id="preview" disabled>Check file &amp; preview</button><button id="import" class="primary" disabled>Import</button></div>
+  <p id="status" role="status" aria-live="polite">Connecting to Grist…</p>
+  <section id="details" hidden aria-label="Import preview">
+    <dl><div><dt>Period</dt><dd id="period"></dd></div><div><dt>New sales records</dt><dd id="count"></dd></div><div><dt>Item net sales</dt><dd id="net"></dd></div></dl>
+    <p id="gaps"></p><p id="source" class="source"></p>
+  </section>
+  <p class="fine">Full access is required to add records to your DSR. Choose a prepared file, check the preview, then click Import. Keep Grist open until the saved-data check finishes.</p>
+  <p id="timing" class="fine"></p>
+</main></body></html>
